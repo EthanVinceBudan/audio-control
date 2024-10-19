@@ -1,6 +1,8 @@
-from tkinter import ttk, Tk, StringVar, IntVar, HORIZONTAL
+from tkinter import ttk, Tk, StringVar, IntVar, HORIZONTAL, messagebox
 from pystray import Icon, Menu, MenuItem
 from PIL import Image
+import json
+from os.path import exists as os_file_exists
 from serial import Serial
 from serial.tools.list_ports import comports as list_comports
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
@@ -9,6 +11,9 @@ from comtypes import CLSCTX_ALL, COMError
 from threading import Thread, Event
 
 class TrayApplication(Tk):
+
+    DEFAULT_CONFIG_PATH = 'userConfig.json'
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.iconbitmap('icon.ico')
@@ -25,6 +30,7 @@ class TrayApplication(Tk):
 
         self.icon = self.create_tray_icon()
         self.create_window_content()
+        self.load_config_file(TrayApplication.DEFAULT_CONFIG_PATH)
 
     def graceful_exit(self):
         self.serial_port.stop()
@@ -62,6 +68,8 @@ class TrayApplication(Tk):
             cb.state(['disabled'])
         self.startButton.state(['disabled'])
         self.refreshButton.state(['disabled'])
+        self.saveButton.state(['disabled'])
+        self.loadButton.state(['disabled'])
         self.portSelect.state(['disabled'])
         self.baudSelect.state(['disabled'])
         self.stopButton.state(['!disabled'])
@@ -75,6 +83,8 @@ class TrayApplication(Tk):
             cb.state(['!disabled'])
         self.stopButton.state(['disabled'])
         self.refreshButton.state(['!disabled'])
+        self.saveButton.state(['!disabled'])
+        self.loadButton.state(['!disabled'])
         self.portSelect.state(['!disabled'])
         self.baudSelect.state(['!disabled'])
         self.startButton.state(['!disabled'])
@@ -87,6 +97,68 @@ class TrayApplication(Tk):
                 cb.current(0)
         self.deviceUpdater = DeviceUpdater(self.all_audio_devices.values())
         self.serial_port = ThreadedPortReader(self.deviceUpdater, timeout=1)
+
+    def load_config_file(self, filePath):
+        print(f"Loading configuration from {filePath}...")
+        if not os_file_exists(filePath):
+            print(f"File {filePath} could not be found, aborting.")
+            return
+
+        mappingError = False
+        portError = False
+
+        data = {}
+        with open(filePath, 'r') as f:
+            data = json.load(f)
+
+        for dv, dm in zip(self.device_vars, data["map"]):
+            if dm not in self.all_audio_devices.keys() and dm != "None":
+                mappingError = True
+                continue
+            dv.set(dm)
+
+        if data["port"] not in self.all_comports:
+            portError = True
+        else:
+            self.comport_var.set(data["port"])
+
+        self.baud_var.set(int(data["baud"])) # no error checking for this one :)
+
+        extraErrorText = ""
+        if mappingError:
+            extraErrorText = (
+                "An audio device could not be found.\n\n"
+                "Ensure all relevant devices are connected and powered on."
+            )
+
+        if portError:
+            extraErrorText = (
+                "The COM port specified could not be found.\n\n"
+                "Ensure your microcontroller is connected and powered on."
+            )
+
+        if any([mappingError, portError]):
+            messagebox.showerror(
+                title="Error while loading configuration file",
+                message=(
+                    "The configuration file could not be properly loaded."
+                    " Some options have been left unchanged.\n\n"
+                    f"Reason: {extraErrorText}"
+                )
+            )
+        print("Done loading.")
+
+    def update_config_file(self, filePath):
+        print(f"Saving configuration to {filePath}...")
+        settingsDict = {
+            "map": [dv.get() for dv in self.device_vars],
+            "port": self.comport_var.get(),
+            "baud": int(self.baud_var.get()),
+        }
+        with open(filePath, 'w') as f:
+            json.dump(settingsDict, f)
+
+        print("Done saving.")
 
     def create_menu(self):
         exitItem = MenuItem("Exit", self.graceful_exit)
@@ -109,12 +181,17 @@ class TrayApplication(Tk):
             cb = ttk.Combobox(mappingFrame, textvariable=self.device_vars[i],
                     values = ["None"] + list(self.all_audio_devices.keys()), width=50)
             cb.state(['readonly'])
-            cb.grid(row=i,column=1, pady=0 if i != 3 else (0,5))
+            cb.grid(row=i,column=1, padx=(0,5))
             cb.current(0)
             self.deviceCbList.append(cb)
 
+        self.refreshButton = ttk.Button(mappingFrame, text="Refresh Devices",
+                command=self.refresh_device_list)
+        self.refreshButton.grid(row=mappingFrame.grid_size()[1],
+                column=0, columnspan=3, sticky="W", padx=5, pady=5)
+
         optionsFrame = ttk.Labelframe(self, text="Options")
-        optionsFrame.grid(row=2,column=0, sticky="NSEW", padx=5, pady=5)
+        optionsFrame.grid(row=1,column=0, sticky="NSEW", padx=5, pady=5)
         optionsFrame.columnconfigure(1, weight=1)
 
         portLabel = ttk.Label(optionsFrame, text="COM Port:")
@@ -135,8 +212,19 @@ class TrayApplication(Tk):
         self.baudSelect.current(0)
         self.baudSelect.grid(row=1, column=1, sticky="W", pady=(0,5))
 
+        fileIOFrame = ttk.Labelframe(self, text="Configuration File")
+        fileIOFrame.grid(row=2, column=0, sticky="NSEW", padx=5, pady=5)
+
+        self.saveButton = ttk.Button(fileIOFrame, text="Save",
+                command=lambda: self.update_config_file(TrayApplication.DEFAULT_CONFIG_PATH))
+        self.saveButton.grid(row=1,column=0, padx=(5,0), pady=(0,5))
+
+        self.loadButton = ttk.Button(fileIOFrame, text="Load",
+                command = lambda: self.load_config_file(TrayApplication.DEFAULT_CONFIG_PATH))
+        self.loadButton.grid(row=1, column=1, padx=(0,5), pady=(0,5))
+
         buttonFrame = ttk.Frame(self)
-        buttonFrame.grid(row=4,column=0, sticky="NSEW", padx=5, pady=5)
+        buttonFrame.grid(row=3,column=0, sticky="NSEW", padx=5, pady=5)
         buttonFrame.columnconfigure(3, weight=1)
 
         self.startButton = ttk.Button(buttonFrame, text="Start",
@@ -147,10 +235,6 @@ class TrayApplication(Tk):
                 command=self.stop_comport)
         self.stopButton.state(['disabled'])
         self.stopButton.grid(row=0, column=1)
-
-        self.refreshButton = ttk.Button(buttonFrame, text="Refresh Devices",
-                command=self.refresh_device_list)
-        self.refreshButton.grid(row=0,column=2)
 
         quitButton = ttk.Button(buttonFrame, text="Quit",
                 command=self.graceful_exit)
