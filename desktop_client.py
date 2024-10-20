@@ -2,13 +2,18 @@ from tkinter import ttk, Tk, StringVar, IntVar, HORIZONTAL, messagebox
 from pystray import Icon, Menu, MenuItem
 from PIL import Image
 import json
-from os.path import exists as os_file_exists
+import logging
+from logging.handlers import TimedRotatingFileHandler
+import os
 from serial import Serial
 from serial.tools.list_ports import comports as list_comports
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 from pycaw.constants import EDataFlow, DEVICE_STATE
 from comtypes import CLSCTX_ALL, COMError
 from threading import Thread, Event
+
+logger = logging.getLogger(__name__)
+LOGFILE_DIR = "./log"
 
 class TrayApplication(Tk):
 
@@ -23,7 +28,11 @@ class TrayApplication(Tk):
         self.all_comports = self.scan_comports()
         self.all_audio_devices = self.scan_audio_devices()
 
-        self.protocol("WM_DELETE_WINDOW", self.withdraw)
+        def hide_func():
+            self.withdraw()
+            logger.info("Minimizing to system tray")
+
+        self.protocol("WM_DELETE_WINDOW", hide_func)
 
         self.deviceUpdater = DeviceUpdater(self.all_audio_devices.values())
         self.serial_port = ThreadedPortReader(self.deviceUpdater, timeout=1)
@@ -33,6 +42,7 @@ class TrayApplication(Tk):
         self.load_config_file(TrayApplication.DEFAULT_CONFIG_PATH)
 
     def graceful_exit(self):
+        logger.info("Shutting down...")
         self.serial_port.stop()
         self.serial_port.close()
         self.deiconify()
@@ -57,7 +67,7 @@ class TrayApplication(Tk):
         return {d.FriendlyName: d for d in activeDevices}
 
     def start_controlling(self):
-        print(f"Opening COM port {self.comport_var.get()}")
+        logger.info(f"Opening COM port {self.comport_var.get()}")
         self.serial_port.port = self.all_comports[self.comport_var.get()].device
         self.serial_port.baudrate = self.baud_var.get()
         self.deviceUpdater.select_devices([v.get() for v in self.device_vars])
@@ -75,7 +85,7 @@ class TrayApplication(Tk):
         self.stopButton.state(['!disabled'])
 
     def stop_comport(self):
-        print("Closing COM port.")
+        logger.info("Closing COM port.")
         self.serial_port.stop()
         self.serial_port.close()
 
@@ -90,6 +100,7 @@ class TrayApplication(Tk):
         self.startButton.state(['!disabled'])
 
     def refresh_device_list(self):
+        logger.info("Refreshing device list...")
         self.all_audio_devices = self.scan_audio_devices()
         for cb in self.deviceCbList:
             cb['values'] = ["None"] + list(self.all_audio_devices.keys())
@@ -97,11 +108,12 @@ class TrayApplication(Tk):
                 cb.current(0)
         self.deviceUpdater = DeviceUpdater(self.all_audio_devices.values())
         self.serial_port = ThreadedPortReader(self.deviceUpdater, timeout=1)
+        logger.info(f"Found {len(self.all_audio_devices.keys())} devices.")
 
     def load_config_file(self, filePath):
-        print(f"Loading configuration from {filePath}...")
-        if not os_file_exists(filePath):
-            print(f"File {filePath} could not be found, aborting.")
+        logger.info(f"Loading configuration from {filePath}")
+        if not os.path.exists(filePath):
+            logger.error(f"File {filePath} could not be found, aborting.")
             return
 
         mappingError = False
@@ -114,11 +126,13 @@ class TrayApplication(Tk):
         for dv, dm in zip(self.device_vars, data["map"]):
             if dm not in self.all_audio_devices.keys() and dm != "None":
                 mappingError = True
+                logger.error(f"Device {dm} specified in config file but cannot be found")
                 continue
             dv.set(dm)
 
         if data["port"] not in self.all_comports:
             portError = True
+            logger.error(f"COM Port {data['port']} specified in config file but cannot be found")
         else:
             self.comport_var.set(data["port"])
 
@@ -146,10 +160,9 @@ class TrayApplication(Tk):
                     f"Reason: {extraErrorText}"
                 )
             )
-        print("Done loading.")
 
     def update_config_file(self, filePath):
-        print(f"Saving configuration to {filePath}...")
+        logger.info(f"Saving configuration to {filePath}")
         settingsDict = {
             "map": [dv.get() for dv in self.device_vars],
             "port": self.comport_var.get(),
@@ -158,11 +171,14 @@ class TrayApplication(Tk):
         with open(filePath, 'w') as f:
             json.dump(settingsDict, f)
 
-        print("Done saving.")
-
     def create_menu(self):
+        def reveal_func():
+            self.deiconify()
+            logger.info("Revealing main window")
+
+        showItem = MenuItem("Open", reveal_func, default="True")
         exitItem = MenuItem("Exit", self.graceful_exit)
-        showItem = MenuItem("Open", self.deiconify, default="True")
+
         return Menu(showItem, exitItem)
 
     def create_tray_icon(self):
@@ -241,7 +257,9 @@ class TrayApplication(Tk):
         quitButton.grid(row=0, column=3, sticky="E")
 
     def mainloop(self):
+        logger.info("Tray icon starting")
         self.icon.run_detached()
+        logger.info("Windowed GUI starting")
         super().mainloop()
 
 
@@ -308,9 +326,22 @@ class DeviceUpdater:
                 else:
                     interface.SetMute(False, None)
             except COMError as ce:
-                print(f"Device #{i}: {ce.text}")
+                logger.warning(f"Device #{i}: {ce.text}")
 
 if __name__ == "__main__":
+    if not os.path.exists(LOGFILE_DIR):
+        os.mkdir(LOGFILE_DIR)
+
+    logfileHandler = TimedRotatingFileHandler(f"{LOGFILE_DIR}/output", when="d",
+            backupCount=5)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='[%(asctime)s] %(levelname)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[logfileHandler],
+    )
+    logger.info("Starting main application")
     trayApp = TrayApplication()
     trayApp.title("AudioControl")
     trayApp.mainloop()
+    logger.info("Program terminated")
