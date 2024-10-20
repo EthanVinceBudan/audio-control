@@ -177,9 +177,11 @@ class TrayApplication(Tk):
             logger.info("Revealing main window")
 
         showItem = MenuItem("Open", reveal_func, default="True")
+        startItem = MenuItem("Start Controlling", self.start_controlling)
+        stopItem = MenuItem("Stop Controlling", self.stop_comport)
         exitItem = MenuItem("Exit", self.graceful_exit)
 
-        return Menu(showItem, exitItem)
+        return Menu(showItem, startItem, stopItem, exitItem)
 
     def create_tray_icon(self):
         with Image.open('icon.ico') as im:
